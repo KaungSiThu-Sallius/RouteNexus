@@ -3,6 +3,7 @@ import asyncio
 import os
 import json
 import re
+import tempfile
 from cloud_sql_session import CloudSQLSessionService
 import threading
 import queue
@@ -16,6 +17,14 @@ LOCATION = os.getenv("DB_REGION", "asia-southeast1")
 INSTANCE_NAME = os.getenv("INSTANCE_NAME", f"{PROJECT_ID}:{LOCATION}:routenexus-db")
 DB_USER = os.getenv("DB_USER", "postgres")
 DB_PASS = os.getenv("DB_PASS", "")
+
+credentials_json = os.getenv("GOOGLE_APPLICATION_CREDENTIALS_JSON", "").strip()
+credentials_path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "").strip()
+if credentials_json and not credentials_path:
+    temp_credentials_path = os.path.join(tempfile.gettempdir(), "routenexus-gcp-creds.json")
+    with open(temp_credentials_path, "w", encoding="utf-8") as credentials_file:
+        credentials_file.write(credentials_json)
+    os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = temp_credentials_path
 
 os.environ["GOOGLE_GENAI_USE_VERTEXAI"] = "1"
 os.environ["GOOGLE_CLOUD_PROJECT"] = PROJECT_ID
