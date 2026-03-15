@@ -1,0 +1,8 @@
+streamlit
+requests
+google-cloud-sql-connector[asyncpg]
+sqlalchemy
+asyncpg
+google-adk
+google-genai
+vertexai
