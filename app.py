@@ -142,6 +142,7 @@ if "cached_history"    not in st.session_state: st.session_state.cached_history 
 if "history_needs_refresh" not in st.session_state: st.session_state.history_needs_refresh = True
 if "human_approval"    not in st.session_state: st.session_state.human_approval    = None
 if "mission_input"     not in st.session_state: st.session_state.mission_input     = "Analyze the Strait of Malacca. Check live weather risks, our internal financial exposure, and verify if a reroute is compliant with company policy."
+if "local_sessions"    not in st.session_state: st.session_state.local_sessions    = {}
 
 # Initialize unique session ID if fresh
 if st.session_state.current_session_id == "0":
@@ -279,18 +280,45 @@ async def _delete_all_history_async():
 def delete_all_history():
     run_in_bg(_delete_all_history_async())
 
+
+def save_local_session_snapshot():
+    st.session_state.local_sessions[st.session_state.current_session_id] = {
+        "chat_history": list(st.session_state.chat_history),
+        "swarm_output": st.session_state.swarm_output,
+        "trace_logs": st.session_state.trace_logs,
+        "mission_input": st.session_state.mission_input,
+        "session_ready": st.session_state.session_ready,
+    }
+
+
+def load_local_session_snapshot(session_id: str):
+    snapshot = st.session_state.local_sessions.get(session_id)
+    if not snapshot:
+        return
+    st.session_state.current_session_id = session_id
+    st.session_state.chat_history = list(snapshot.get("chat_history", []))
+    st.session_state.swarm_output = snapshot.get("swarm_output")
+    st.session_state.trace_logs = snapshot.get("trace_logs", ">>> [SYSTEM] Ready for chat deployment...\n")
+    st.session_state.mission_input = snapshot.get("mission_input", st.session_state.mission_input)
+    st.session_state.session_ready = snapshot.get("session_ready", False)
+    st.session_state.human_approval = None
+
 with st.sidebar:
     st.header("Chat History")
     
     # New Chat Button
     if st.button("➕ New Chat", type="primary", use_container_width=True):
         import time
+        if st.session_state.chat_history or st.session_state.swarm_output:
+            save_local_session_snapshot()
         st.session_state.current_session_id = str(int(time.time()))
         st.session_state.swarm_output = None
         st.session_state.trace_logs = ">>> [SYSTEM] Ready for chat deployment...\n"
         st.session_state.chat_history = []
         st.session_state.session_ready = False
         st.session_state.human_approval = None
+        st.session_state.mission_input = "Analyze the Strait of Malacca. Check live weather risks, our internal financial exposure, and verify if a reroute is compliant with company policy."
+        save_local_session_snapshot()
         st.rerun()
 
     if st.button("🗑️ Clear All History", type="secondary", use_container_width=True):
@@ -304,6 +332,7 @@ with st.sidebar:
             st.session_state.session_ready = False
             st.session_state.history_needs_refresh = True
             st.session_state.cached_history = None
+            st.session_state.local_sessions = {}
             st.rerun()
 
     st.markdown("---")
@@ -316,10 +345,19 @@ with st.sidebar:
                 
             history = st.session_state.cached_history
             
-            if getattr(history, "sessions", None) is None or not history.sessions:
+            if GLOBAL_SVC and getattr(history, "sessions", None):
+                sessions_to_render = sorted(history.sessions, key=lambda x: x.id, reverse=True)
+            else:
+                local_session_ids = sorted(st.session_state.local_sessions.keys(), reverse=True)
+                sessions_to_render = [
+                    type("LocalSession", (), {"id": session_id})()
+                    for session_id in local_session_ids
+                ]
+
+            if not sessions_to_render:
                 st.info("No past chats yet.")
             else:
-                for sess in sorted(history.sessions, key=lambda x: x.id, reverse=True):
+                for sess in sessions_to_render:
                     if sess.id == "health_check_test": continue # skip the tests
                     is_active = sess.id == st.session_state.current_session_id
                     timestamp_str = sess.id
@@ -336,50 +374,50 @@ with st.sidebar:
                         st.markdown(f'<div class="session-item session-selected">{label}</div>', unsafe_allow_html=True)
                     else:
                         if st.button(label, key=f"btn_{sess.id}", use_container_width=True):
-                            # Load this session
-                            with st.spinner("Restoring chat..."):
-                                st.session_state.current_session_id = sess.id
-                                st.session_state.session_ready = True
-                                st.session_state.human_approval = None
-                                st.session_state.swarm_output = None
-                                
-                                # Rebuild chat history from events
-                                full_sess = restore_session_history(sess.id)
-                            new_history = []
-                            restored_report = None
-                            restored_command = None
-                            if getattr(full_sess, "events", None):
-                                for evt in full_sess.events:
-                                    actions = getattr(evt, "actions", None)
-                                    state_delta = getattr(actions, "state_delta", None) if actions else None
-                                    if isinstance(state_delta, dict) and isinstance(state_delta.get("mission_report"), dict):
-                                        restored_report = state_delta.get("mission_report")
-                                    if isinstance(state_delta, dict) and isinstance(state_delta.get("chat_command"), str) and state_delta.get("chat_command").strip():
-                                        restored_command = state_delta.get("chat_command").strip()
-                                    if getattr(evt, "content", None) and getattr(evt.content, "parts", None):
-                                        role = "user" if evt.content.role == "user" else "assistant"
-                                        txt = "".join([p.text for p in evt.content.parts if hasattr(p, "text") and getattr(p, "text", None)])
-                                        if txt.strip():
-                                            if role == "user" and restored_command is None:
-                                                restored_command = txt
-                                            new_history.append({"role": role, "content": txt})
-                            
-                            st.session_state.chat_history = new_history
-                            if restored_command:
-                                st.session_state.mission_input = restored_command
-                            if restored_report:
-                                st.session_state.swarm_output = restored_report
+                            if st.session_state.chat_history or st.session_state.swarm_output:
+                                save_local_session_snapshot()
+                            if GLOBAL_SVC:
+                                with st.spinner("Restoring chat..."):
+                                    st.session_state.current_session_id = sess.id
+                                    st.session_state.session_ready = True
+                                    st.session_state.human_approval = None
+                                    st.session_state.swarm_output = None
+                                    full_sess = restore_session_history(sess.id)
+                                new_history = []
+                                restored_report = None
+                                restored_command = None
+                                if getattr(full_sess, "events", None):
+                                    for evt in full_sess.events:
+                                        actions = getattr(evt, "actions", None)
+                                        state_delta = getattr(actions, "state_delta", None) if actions else None
+                                        if isinstance(state_delta, dict) and isinstance(state_delta.get("mission_report"), dict):
+                                            restored_report = state_delta.get("mission_report")
+                                        if isinstance(state_delta, dict) and isinstance(state_delta.get("chat_command"), str) and state_delta.get("chat_command").strip():
+                                            restored_command = state_delta.get("chat_command").strip()
+                                        if getattr(evt, "content", None) and getattr(evt.content, "parts", None):
+                                            role = "user" if evt.content.role == "user" else "assistant"
+                                            txt = "".join([p.text for p in evt.content.parts if hasattr(p, "text") and getattr(p, "text", None)])
+                                            if txt.strip():
+                                                if role == "user" and restored_command is None:
+                                                    restored_command = txt
+                                                new_history.append({"role": role, "content": txt})
+                                st.session_state.chat_history = new_history
+                                if restored_command:
+                                    st.session_state.mission_input = restored_command
+                                if restored_report:
+                                    st.session_state.swarm_output = restored_report
+                                else:
+                                    for msg in reversed(new_history):
+                                        jm = re.search(r"\{[\s\S]*\}", msg["content"])
+                                        if jm:
+                                            try:
+                                                st.session_state.swarm_output = json.loads(jm.group())
+                                                break
+                                            except Exception:
+                                                pass
+                                st.session_state.trace_logs = f">>> [SYSTEM] Loaded session {sess.id} from Cloud SQL.\n"
                             else:
-                                for msg in reversed(new_history):
-                                    jm = re.search(r"\{[\s\S]*\}", msg["content"])
-                                    if jm:
-                                        try:
-                                            st.session_state.swarm_output = json.loads(jm.group())
-                                            break
-                                        except Exception:
-                                            pass
-                            
-                            st.session_state.trace_logs = f">>> [SYSTEM] Loaded session {sess.id} from Cloud SQL.\n"
+                                load_local_session_snapshot(sess.id)
                             st.rerun()
         except Exception as e:
             st.error(f"Could not load history: {e}")
@@ -416,6 +454,7 @@ with col2:
                 # Add to chat history
                 st.session_state.chat_history.append({"role": "user",      "content": mission})
                 st.session_state.chat_history.append({"role": "assistant", "content": raw_text or "Chat complete."})
+                save_local_session_snapshot()
 
                 st.rerun()
     else:
@@ -546,5 +585,6 @@ else:
 
             st.session_state.chat_history.append({"role": "user",      "content": user_input})
             st.session_state.chat_history.append({"role": "assistant",  "content": reply})
+            save_local_session_snapshot()
 
         st.rerun()
