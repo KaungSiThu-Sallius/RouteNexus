@@ -99,7 +99,11 @@ def get_global_db_service():
         ), 
         loop
     )
-    svc = future.result()
+    try:
+        svc = future.result()
+    except Exception as e:
+        print(f"[WARN] Cloud SQL session service unavailable: {e}")
+        svc = None
     return loop, svc
 
 GLOBAL_LOOP, GLOBAL_SVC = get_global_db_service()
@@ -147,12 +151,13 @@ if st.session_state.current_session_id == "0":
 # ── Core: Send a message and stream the response ──────────────────────────────
 async def _send_message_async(message_text: str, session_id: str, current_trace_logs: str, q: queue.Queue) -> tuple[dict | None, str | None, str]:
     """Internal async logic running on the background loop."""
-    try:
-        existing = await GLOBAL_SVC.get_session(app_name=APP_NAME, user_id=USER_ID, session_id=session_id)
-        if not existing:
-            await GLOBAL_SVC.create_session(app_name=APP_NAME, user_id=USER_ID, session_id=session_id)
-    except Exception:
-        existing = None
+    if GLOBAL_SVC:
+        try:
+            existing = await GLOBAL_SVC.get_session(app_name=APP_NAME, user_id=USER_ID, session_id=session_id)
+            if not existing:
+                await GLOBAL_SVC.create_session(app_name=APP_NAME, user_id=USER_ID, session_id=session_id)
+        except Exception:
+            existing = None
 
     trace_log = current_trace_logs + f"\n\n>>> [USER] {message_text}\n>>> [SYSTEM] Routing to Swarm...\n"
     q.put(trace_log)
@@ -190,23 +195,24 @@ async def _send_message_async(message_text: str, session_id: str, current_trace_
         final_data = synthesize_report_with_llm(message_text, region, weather_raw, inventory_raw, policy_raw)
         final_text = json.dumps(final_data, indent=2)
 
-        try:
-            sess = await GLOBAL_SVC.get_session(app_name=APP_NAME, user_id=USER_ID, session_id=session_id)
-            if sess:
-                from google.adk.events.event import Event
-                from google.adk.events.event_actions import EventActions
-                import time
-                evt = Event(
-                    author="system",
-                    actions=EventActions(state_delta={
-                        "mission_report": final_data,
-                        "chat_command": message_text,
-                    }),
-                    timestamp=time.time(),
-                )
-                await GLOBAL_SVC.append_event(sess, evt)
-        except Exception:
-            pass
+        if GLOBAL_SVC:
+            try:
+                sess = await GLOBAL_SVC.get_session(app_name=APP_NAME, user_id=USER_ID, session_id=session_id)
+                if sess:
+                    from google.adk.events.event import Event
+                    from google.adk.events.event_actions import EventActions
+                    import time
+                    evt = Event(
+                        author="system",
+                        actions=EventActions(state_delta={
+                            "mission_report": final_data,
+                            "chat_command": message_text,
+                        }),
+                        timestamp=time.time(),
+                    )
+                    await GLOBAL_SVC.append_event(sess, evt)
+            except Exception:
+                pass
 
         trace_log += "\n\n>>> [SYSTEM] Swarm Standby. Response complete."
         q.put(trace_log)
@@ -247,18 +253,24 @@ def send_message(message_text: str, log_placeholder, session_id: str):
     return data, text
 
 async def _fetch_history_async():
+    if not GLOBAL_SVC:
+        return None
     return await GLOBAL_SVC.list_sessions(app_name=APP_NAME, user_id=USER_ID)
 
 def fetch_history():
     return run_in_bg(_fetch_history_async())
 
 async def _restore_session_async(sess_id):
+    if not GLOBAL_SVC:
+        return None
     return await GLOBAL_SVC.get_session(app_name=APP_NAME, user_id=USER_ID, session_id=sess_id)
 
 def restore_session_history(sess_id):
     return run_in_bg(_restore_session_async(sess_id))
 
 async def _delete_all_history_async():
+    if not GLOBAL_SVC:
+        return
     history = await GLOBAL_SVC.list_sessions(app_name=APP_NAME, user_id=USER_ID)
     if history and history.sessions:
         for sess in history.sessions:
