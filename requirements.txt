@@ -1,6 +1,6 @@
 streamlit
 requests
-google-cloud-sql-connector[asyncpg]
+cloud-sql-python-connector[asyncpg]
 sqlalchemy
 asyncpg
 google-adk
